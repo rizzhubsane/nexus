@@ -33,25 +33,27 @@ export async function classifyIntent(message: string): Promise<{ intent: Intent;
   }
 }
 
+// Minimal, targeted mappings: only load what the intent truly needs.
+// The rule: if the user mentions it, load it. If they don't, don't.
 const INTENT_TO_LAYERS: Record<Intent, string[]> = {
-  question: ['schedule', 'academics', 'goals', 'tasks', 'state'],
-  info_dump: [],
+  question:       ['tasks'],          // default fallback — topics will add specifics
+  info_dump:      [],                 // user is giving info, not querying it
   action_request: ['tasks'],
-  vent: ['state', 'wins', 'identity'],
-  greeting: [],
-  grade_query: ['academics'],
-  schedule_query: ['schedule', 'deadlines', 'tasks'],
-  planning: ['schedule', 'deadlines', 'tasks', 'goals', 'state'],
+  vent:           ['state', 'wins', 'identity'],
+  greeting:       [],
+  grade_query:    ['academics'],
+  schedule_query: ['schedule', 'deadlines'],
+  planning:       ['schedule', 'deadlines', 'tasks', 'goals'],
 };
 
 const TOPIC_TO_LAYERS: Record<Topic, string[]> = {
-  academics: ['academics', 'identity'],
-  schedule: ['schedule', 'deadlines'],
+  academics: ['academics'],           // removed 'identity' — not needed for grade queries
+  schedule:  ['schedule', 'deadlines'],
   emotional: ['state', 'wins', 'identity', 'contradictions'],
-  goal: ['goals', 'state'],
-  person: ['people'],
-  task: ['tasks', 'deadlines'],
-  general: ['schedule', 'tasks'],
+  goal:      ['goals'],               // removed 'state' — only load state on emotional queries
+  person:    ['people'],
+  task:      ['tasks'],               // removed 'deadlines' — loaded by schedule topic if needed
+  general:   ['tasks'],               // minimal: just tasks for generic messages
 };
 
 export async function compileContext(
@@ -71,8 +73,10 @@ export async function compileContext(
     }
   }
 
-  // Always include minimal context for non-trivial messages
-  if (intent !== 'greeting') {
+  // Only add tasks as a default for messages that aren't topic-specific
+  // (avoids loading tasks for pure grade/emotional/people queries)
+  const hasSpecificTopics = topics.some(t => t !== 'general');
+  if (intent !== 'greeting' && !hasSpecificTopics) {
     neededLayers.add('tasks');
   }
 

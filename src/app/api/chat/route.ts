@@ -7,6 +7,51 @@ import { BASE_SYSTEM_PROMPT, buildContextBlock } from '@/lib/llm/prompts';
 import { EXTRACTION_PROMPT, parseExtractions } from '@/lib/llm/extract';
 import { compileContext } from '@/lib/nexus/compiler';
 import { processExtractions } from '@/lib/nexus/extractor';
+import { checkForConflicts, recomputeGradeProjection } from '@/lib/brain/reactive';
+import type { Extraction } from '@/lib/db/types';
+
+// Runs reactive monitors after extraction pipeline saves new data.
+// Inserts follow-up assistant messages for conflicts and grade alerts.
+async function runReactiveMonitors(userId: string, extractions: Extraction[]): Promise<void> {
+  // Check for schedule/event conflicts
+  const eventOrSchedule = extractions.find(e => e.type === 'event' || e.type === 'schedule');
+  if (eventOrSchedule) {
+    const data = eventOrSchedule.data as Record<string, unknown>;
+    const item = {
+      title: data.title as string,
+      date: data.date as string | undefined,
+      day_of_week: data.day_of_week as number | undefined,
+      start_time: data.time as string | undefined || data.start_time as string | undefined,
+      end_time: data.end_time as string | undefined,
+    };
+    if (item.start_time) {
+      const conflict = await checkForConflicts(userId, item as Parameters<typeof checkForConflicts>[1]);
+      if (conflict) {
+        await insertMessage(userId, 'assistant', conflict, {
+          proactive: true,
+          trigger: 'schedule_conflict',
+        });
+      }
+    }
+  }
+
+  // Recompute grade projection on new mark
+  const markExtraction = extractions.find(e => e.type === 'mark');
+  if (markExtraction) {
+    const data = markExtraction.data as Record<string, unknown>;
+    const courseId = data.course_id as string | undefined;
+    if (courseId) {
+      const projection = await recomputeGradeProjection(userId, courseId);
+      if (projection.alert) {
+        await insertMessage(userId, 'assistant', projection.alert, {
+          proactive: true,
+          trigger: 'grade_alert',
+          gradeProjection: projection,
+        });
+      }
+    }
+  }
+}
 
 async function getUserId(request: NextRequest): Promise<string | null> {
   const supabase = createServerClient(
@@ -111,9 +156,9 @@ export async function POST(request: NextRequest) {
 
         // Process extractions in background (after stream is closed)
         if (extractions.length > 0 || updates.length > 0) {
-          processExtractions(userId, extractions, updates).catch(err =>
-            console.error('Extraction processing error:', err)
-          );
+          processExtractions(userId, extractions, updates)
+            .then(() => runReactiveMonitors(userId, extractions))
+            .catch(err => console.error('Extraction processing error:', err));
         }
       } catch (err) {
         console.error('Streaming error:', err);
