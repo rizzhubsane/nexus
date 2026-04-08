@@ -53,7 +53,7 @@ async function runReactiveMonitors(userId: string, extractions: Extraction[]): P
   }
 }
 
-async function getUserId(request: NextRequest): Promise<string | null> {
+async function getAuthUser(request: NextRequest): Promise<{ id: string; email: string } | null> {
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -68,14 +68,16 @@ async function getUserId(request: NextRequest): Promise<string | null> {
   );
 
   const { data: { user } } = await supabase.auth.getUser();
-  return user?.id || null;
+  if (!user?.id) return null;
+  return { id: user.id, email: user.email || '' };
 }
 
 export async function POST(request: NextRequest) {
-  const userId = await getUserId(request);
-  if (!userId) {
+  const authUser = await getAuthUser(request);
+  if (!authUser) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
   }
+  const userId = authUser.id;
 
   const { message } = await request.json();
   if (!message || typeof message !== 'string') {
@@ -83,6 +85,11 @@ export async function POST(request: NextRequest) {
   }
 
   const db = createServerSupabase();
+
+  // Ensure user row exists (guard against missing trigger on first login)
+  await db
+    .from('users')
+    .upsert({ id: userId, email: authUser.email }, { onConflict: 'id', ignoreDuplicates: true });
 
   // Save user message
   const userMsg = await insertMessage(userId, 'user', message);
